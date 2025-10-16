@@ -173,9 +173,9 @@ graph = graph_builder.compile()
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 
-with open("../image/generate_recipe.png", "wb") as f:
+with open("../image/e3_generate_recipe.png", "wb") as f:
     f.write(graph.get_graph().draw_mermaid_png())
-img = mpimg.imread("../image/generate_recipe.png")
+img = mpimg.imread("../image/e3_generate_recipe.png")
 plt.imshow(img)
 plt.axis('off')
 plt.show()
