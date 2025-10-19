@@ -1,66 +1,76 @@
 # main.py
+import asyncio
 import json
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
+from typing import AsyncGenerator
+
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from starlette.responses import StreamingResponse
 
-app = FastAPI()
+# 导入你的 agent 模块
+from agent import agent
 
-# 允许前端跨域请求
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:3000", "*"],  # Next.js 默认端口
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app = FastAPI(title="LangGraph Chat Agent API", version="1.0")
 
 
 class ChatRequest(BaseModel):
     message: str
-    history: list = []
+    thread_id: str = "default"  # 用于区分不同会话
 
 
-@app.post("/chat")
-async def chat(request: Request):
-    from agent import agent
+async def event_stream(user_input: str, thread_id: str) -> AsyncGenerator[str, None]:
+    """
+    异步生成器：模拟 agent.stream() 的输出并逐块发送 SSE
+    """
+    from langchain_core.messages import HumanMessage
 
-    body = await request.json()
-    user_message = body["message"]
-    history = body.get("history", [])
+    messages = [HumanMessage(content=user_input)]
+    config = {"configurable": {"thread_id": thread_id}}
 
-    async def event_stream():
-        try:
-            # 构造输入状态
-            input_state = {"messages": history + [{"role": "user", "content": user_message}]}
+    try:
+        # 遍历 agent 的 stream 输出
+        async for event in agent.astream_events({"messages": messages}, config=config, version="v2"):
+            # 只处理 'on_chain_end' 或 'on_chat_model_stream' 类型事件
+            if event["event"] in ["on_chat_model_stream"]:
+                chunk = event["data"]["chunk"]
+                content = getattr(chunk, "content", "") if hasattr(chunk, "content") else str(chunk)
+                if content:
+                    yield f"data: {json.dumps({'type': 'chunk', 'content': content}, ensure_ascii=False)}\n\n"
+                    await asyncio.sleep(0)  # 让出控制权，避免阻塞
 
-            # 使用 astream_events 获取细粒度事件（LangGraph v2）
-            async for event in agent.astream_events(input_state, version="v2"):
-                kind = event["event"]
+        # 发送结束标记
+        yield f"data: {json.dumps({'type': 'end', 'content': '[DONE]'}, ensure_ascii=False)}\n\n"
 
-                # 1. 当 LLM 正在生成文本时（这才是真正的 token 流！）
-                if kind == "on_chat_model_stream":
-                    content = event["data"].get("chunk", {}).content
-                    if content:
-                        yield f"data: {json.dumps({'type': 'token', 'text': content})}\n\n"
+    except Exception as e:
+        error_msg = f"Error during streaming: {str(e)}"
+        yield f"data: {json.dumps({'type': 'error', 'content': error_msg}, ensure_ascii=False)}\n\n"
 
-                # 2. 工具调用开始
-                elif kind == "on_tool_start":
-                    tool_name = event["name"]
-                    yield f"data: {json.dumps({'type': 'thinking', 'text': f'[🔧 调用工具 {tool_name}...]'})}\n\n"
 
-                # 3. 工具调用结束
-                elif kind == "on_tool_end":
-                    result = str(event["data"]["output"])
-                    yield f"data: {json.dumps({'type': 'tool', 'text': f'[✅ 工具结果: {result}]'})}\n\n"
+@app.post("/api/chat")
+async def chat_endpoint(request: ChatRequest):
+    """
+    接收用户消息，启动 agent 并流式返回结果
+    """
+    if not request.message.strip():
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
 
-                # 4. Agent 完成最终回复
-                elif kind == "on_chain_end" and event["name"] == "Agent":
-                    # 可选：发送完成信号
-                    yield f"data: {json.dumps({'type': 'final', 'text': ''})}\n\n"
+    return StreamingResponse(
+        event_stream(request.message, request.thread_id),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # 禁用 Nginx 缓冲
+        }
+    )
 
-        except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'text': f'❌ {str(e)}'})}\n\n"
 
-    return StreamingResponse(event_stream(), media_type="text/plain; charset=utf-8")
+@app.get("/")
+def root():
+    return {"message": "LangGraph Chat Agent is running. POST to /api/chat with {\"message\": \"...\"}"}
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=8000)
