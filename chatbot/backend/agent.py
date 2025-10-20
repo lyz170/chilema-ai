@@ -95,17 +95,18 @@ def is_time_sensitive_node(state: MessagesState):
     """
     让LLM判断问题是否为时效性问题。
     """
+    # 获取用户的最后一个消息
     question = state["messages"][-1].content
-    system_prompt = """
-      你是一个对话机器人。请判断用户的问题是否涉及时效性（即答案会随时间变化），
-      如果是请回答 'YES'，否则回答 'NO'。只需输出'YES'或'NO'。
-    """
+    system_prompt = (
+        "你是一个对话机器人。请判断用户的问题是否涉及时效性（即答案会随时间变化），"
+        "如果是请回答 'YES'，否则回答 'NO'。只需输出'YES'或'NO'，不要输出其他内容。"
+    )
     prompt = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": question}
     ]
     result = llm.invoke(prompt)
-    answer = result.content.strip()
+    answer = result.content.strip().upper()
     # print the question and the answer
     print(f"Question: {question} | Is time-sensitive? {answer}")
     return {

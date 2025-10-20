@@ -32,9 +32,13 @@ async def event_stream(user_input: str, thread_id: str) -> AsyncGenerator[str, N
         async for event in agent.astream_events({"messages": messages}, config=config, version="v2"):
             # 只处理 'on_chain_end' 或 'on_chat_model_stream' 类型事件
             if event["event"] in ["on_chat_model_stream"]:
+                node_name = event["metadata"].get("langgraph_node", "")
                 chunk = event["data"]["chunk"]
                 content = getattr(chunk, "content", "") if hasattr(chunk, "content") else str(chunk)
-                if content:
+                # [补丁]
+                # 过滤逻辑：如果节点是is_time_sensitive_node，则不输出内容
+                # 这样可以避免时间敏感性判断的YES/NO出现在响应中
+                if content and node_name != "is_time_sensitive_node":
                     yield f"data: {json.dumps({'type': 'chunk', 'content': content}, ensure_ascii=False)}\n\n"
                     await asyncio.sleep(0)  # 让出控制权，避免阻塞
 
